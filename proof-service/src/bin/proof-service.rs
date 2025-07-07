@@ -1,6 +1,7 @@
 use clap::Parser;
 use common::tls::Config as TlsConfig;
 use std::net::SocketAddr;
+use tonic::codec::CompressionEncoding;
 use tonic::transport::Server;
 use tonic::transport::ServerTlsConfig;
 
@@ -41,7 +42,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             nodes_data.add_node(ProverNode::new(node));
         }
     }
+
     let mut server = Server::builder();
+
     if runtime_config.key_path.is_some() {
         let tls_config = TlsConfig::new(
             &runtime_config
@@ -64,7 +67,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc_server = if args.stage {
         let stage = StageServiceSVC::new(runtime_config.clone()).await?;
         server
-            .add_service(StageServiceServer::new(stage))
+            .add_service(StageServiceServer::new(stage)
+                .send_compressed(CompressionEncoding::Gzip)
+                .accept_compressed(CompressionEncoding::Gzip)
+            )
             .serve(addr)
     } else {
         #[cfg(all(feature = "prover", feature = "gpu"))]
