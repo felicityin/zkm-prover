@@ -67,9 +67,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc_server = if args.stage {
         let stage = StageServiceSVC::new(runtime_config.clone()).await?;
         server
-            .add_service(StageServiceServer::new(stage)
-                .send_compressed(CompressionEncoding::Gzip)
-                .accept_compressed(CompressionEncoding::Gzip)
+            .add_service(
+                StageServiceServer::new(stage)
+                    .send_compressed(CompressionEncoding::Gzip)
+                    .accept_compressed(CompressionEncoding::Gzip),
             )
             .serve(addr)
     } else {
@@ -81,7 +82,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let prover = ProverServiceSVC::new(runtime_config.clone());
         server
-            .add_service(ProverServiceServer::new(prover))
+            .add_service(
+                ProverServiceServer::new(prover)
+                    .send_compressed(CompressionEncoding::Gzip)
+                    .accept_compressed(CompressionEncoding::Gzip),
+            )
             .serve(addr)
     };
 
