@@ -28,6 +28,7 @@ pub struct Stage {
     pub is_error: bool,
     pub errmsg: String,
     pub step: Step,
+    /// A flag indicating whether prove and aggregation tasks​ have been generated.
     pub is_tasks_gen_done: bool,
 }
 
@@ -123,6 +124,7 @@ impl Stage {
             Step::Prove => {
                 self.gen_prove_task();
                 tracing::debug!("generate {} tasks", self.prove_tasks.len());
+
                 if self.split_task.state == TASK_STATE_SUCCESS && !self.is_tasks_gen_done {
                     if self.generate_task.target_step == Step::Split {
                         self.step = Step::End;
@@ -135,10 +137,13 @@ impl Stage {
                             self.generate_task.proof_id,
                             self.prove_tasks.len()
                         );
+
                         if !self.generate_task.composite_proof {
                             self.gen_agg_tasks();
                         }
+
                         self.is_tasks_gen_done = true;
+
                         // clear agg tasks' child task
                         let successful_task_ids = self
                             .prove_tasks
@@ -264,6 +269,7 @@ impl Stage {
         if self.generate_task.target_step == Step::Split || self.is_tasks_gen_done {
             return;
         }
+
         // Pre-allocate 64 tasks
         if self.prove_tasks.is_empty() {
             self.prove_tasks = (0..64)
@@ -271,23 +277,27 @@ impl Stage {
                 .map(|i| self.task_with_no(i))
                 .collect();
         }
-        let file_numbers: usize = match std::fs::read_to_string(format!(
-            "{}/segments.txt",
-            self.generate_task.seg_path
-        )) {
-            Ok(content) => match content.trim().parse() {
-                Ok(n) => n,
-                Err(_) => return,
-            },
-            Err(_) => return,
-        };
 
-        // generate prove tasks
-        for file_no in self.prove_tasks.len()..file_numbers {
-            let task = self.task_with_no(file_no);
-            self.prove_tasks.push(task);
-            tracing::debug!("insert {file_no}");
-        }
+        // Generate proof tasks as needed, based on​ the number of segments.
+        tracing::info_span!("Generate proof tasks as needed", || {
+            let file_numbers: usize = match std::fs::read_to_string(format!(
+                "{}/segments.txt",
+                self.generate_task.seg_path
+            )) {
+                Ok(content) => match content.trim().parse() {
+                    Ok(n) => n,
+                    Err(_) => return,
+                },
+                Err(_) => return,
+            };
+            tracing::info!("new segments: {}", file_numbers);
+
+            for file_no in self.prove_tasks.len()..file_numbers {
+                let task = self.task_with_no(file_no);
+                self.prove_tasks.push(task);
+                tracing::debug!("insert {file_no}");
+            }
+        });
     }
 
     fn gen_prove_task_post(&mut self) {
@@ -449,7 +459,7 @@ impl Stage {
         let first_layer_batch_size = FIRST_LAYER_BATCH_SIZE;
 
         let mut agg_index = 0;
-        let mut result = Vec::new();
+        let mut agg_tasks = Vec::new();
         // process the first layer
         let vk = common::file::new(&format!("{}/vk.bin", self.generate_task.base_dir))
             .read()
@@ -474,30 +484,34 @@ impl Stage {
                 batch_index == 0,
                 false,
             );
-            result.push(agg_task);
+            agg_tasks.push(agg_task);
             agg_index += 1;
         }
+
         // already batched during the split phase
         for batch in deferred_prove_tasks {
             let agg_task =
                 AggTask::init_from_prove_tasks(&vk, &[batch], agg_index, is_complete, false, true);
-            result.push(agg_task);
+            agg_tasks.push(agg_task);
             agg_index += 1;
         }
-        self.agg_tasks.append(&mut result.clone());
 
-        let mut current_length = result.len();
+        // The leaf layer.
+        self.agg_tasks.append(&mut agg_tasks.clone());
+
+        // Process non-leaf layers layer by layer.
+        let mut current_length = agg_tasks.len();
         while current_length > 1 {
-            let mut new_result = Vec::new();
-            for batch in result.chunks(batch_size) {
+            let mut new_agg_tasks = Vec::new();
+            for batch in agg_tasks.chunks(batch_size) {
                 let agg_task = AggTask::init_from_agg_tasks(batch, agg_index, false);
                 self.agg_tasks.push(agg_task.clone());
-                new_result.push(agg_task);
+                new_agg_tasks.push(agg_task);
                 agg_index += 1;
             }
 
-            result = new_result;
-            current_length = result.len();
+            agg_tasks = new_agg_tasks;
+            current_length = agg_tasks.len();
         }
 
         if let Some(last) = self.agg_tasks.last_mut() {
@@ -506,7 +520,8 @@ impl Stage {
     }
 
     pub fn get_agg_task(&mut self) -> Option<AggTask> {
-        let mut result: Option<AggTask> = None;
+        let mut pending_agg_task: Option<AggTask> = None;
+
         for agg_task in &mut self.agg_tasks {
             if agg_task.childs.iter().any(|c| c.is_some()) {
                 tracing::debug!("Skipping agg_task: childs: {:?}", agg_task.childs);
@@ -515,14 +530,16 @@ impl Stage {
             if agg_task.state == TASK_STATE_UNPROCESSED || agg_task.state == TASK_STATE_FAILED {
                 agg_task.state = TASK_STATE_PROCESSING;
                 agg_task.trace.start_ts = get_timestamp();
-                result = Some(agg_task.clone());
+                pending_agg_task = Some(agg_task.clone());
                 break;
             }
         }
-        // Fill in the inputs
-        if let Some(agg_task) = &mut result {
+
+        // Transform the reference input into an actual payload.
+        if let Some(agg_task) = &mut pending_agg_task {
             agg_task.inputs.iter_mut().for_each(|input| {
                 if input.is_agg {
+                    // Not the leaf layer.
                     let tmp = self
                         .agg_tasks
                         .iter()
@@ -530,6 +547,7 @@ impl Stage {
                         .unwrap();
                     input.receipt_input = tmp.output.clone();
                 } else {
+                    // The leaf layer.
                     let tmp = self
                         .prove_tasks
                         .iter()
@@ -539,7 +557,7 @@ impl Stage {
                 }
             });
         };
-        result
+        pending_agg_task
     }
 
     pub fn on_agg_task(&mut self, agg_task: &mut AggTask) {
@@ -549,6 +567,7 @@ impl Stage {
                 break;
             }
         }
+
         if agg_task.state == TASK_STATE_SUCCESS {
             for item_task in &mut self.agg_tasks {
                 if item_task.clear_child_task(&agg_task.task_id) {

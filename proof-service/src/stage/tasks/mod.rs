@@ -38,8 +38,9 @@ pub enum Task {
 pub struct Trace {
     pub start_ts: u64,
     pub finish_ts: u64,
-    // FIXME: remove?
-    pub node_info: String,
+    /// Record which prover node this task actually executed on.
+    /// Prevent repeated failures on the same node.
+    pub node_addr: String,
 }
 
 impl Trace {

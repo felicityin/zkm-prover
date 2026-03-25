@@ -125,17 +125,19 @@ pub async fn split(mut split_task: SplitTask, tls_config: Option<TlsConfig>) -> 
             request.proof_id,
             request.computed_request_id
         );
+
         let now = std::time::Instant::now();
         let mut grpc_request = Request::new(request);
         grpc_request.set_timeout(Duration::from_secs(TASK_TIMEOUT));
+
         let response = client.split_elf(grpc_request).await;
+
         let mut status = node_status.lock().unwrap();
         if let Ok(response) = response {
             *status = NodeStatus::Idle;
             if let Some(response_result) = response.get_ref().result.as_ref() {
                 split_task.state = result_code_to_state(response_result.code);
-                // FIXME: node_info usage?
-                split_task.trace.node_info = addrs.clone();
+                split_task.trace.node_addr = addrs.clone();
                 split_task.total_steps = response.get_ref().total_steps;
                 split_task.total_segments = response.get_ref().total_segments;
                 tracing::info!(
@@ -167,7 +169,7 @@ pub async fn prove(mut prove_task: ProveTask, tls_config: Option<TlsConfig>) -> 
     prove_task.state = TASK_STATE_UNPROCESSED;
     let client = get_idle_client(tls_config, TaskType::Prove).await;
     if let Some((addrs, mut client, node_status)) = client {
-        if prove_task.trace.node_info == addrs {
+        if prove_task.trace.node_addr == addrs {
             // If the task is already failed and the node is the same, skip it
             let mut status = node_status.lock().unwrap();
             *status = NodeStatus::Idle;
@@ -194,13 +196,15 @@ pub async fn prove(mut prove_task: ProveTask, tls_config: Option<TlsConfig>) -> 
         let now = std::time::Instant::now();
         let mut grpc_request = Request::new(request);
         grpc_request.set_timeout(Duration::from_secs(TASK_TIMEOUT));
+
         let response = client.prove(grpc_request).await;
+
         let mut status = node_status.lock().unwrap();
         if let Ok(response) = response {
             *status = NodeStatus::Idle;
             if let Some(response_result) = response.get_ref().result.as_ref() {
                 prove_task.state = result_code_to_state(response_result.code);
-                prove_task.trace.node_info = addrs.clone();
+                prove_task.trace.node_addr = addrs.clone();
                 tracing::info!(
                     "[prove] rpc {} {}:{}:{} code:{:?} message:{:?} end, elapsed {:?}",
                     addrs,
@@ -253,13 +257,15 @@ pub async fn aggregate(mut agg_task: AggTask, tls_config: Option<TlsConfig>) -> 
         let now = std::time::Instant::now();
         let mut grpc_request = Request::new(request);
         grpc_request.set_timeout(Duration::from_secs(TASK_TIMEOUT));
+
         let response = client.aggregate(grpc_request).await;
+
         let mut status = node_status.lock().unwrap();
         if let Ok(response) = response {
             *status = NodeStatus::Idle;
             if let Some(response_result) = response.get_ref().result.as_ref() {
                 agg_task.state = result_code_to_state(response_result.code);
-                agg_task.trace.node_info = addrs.clone();
+                agg_task.trace.node_addr = addrs.clone();
                 tracing::info!(
                     "[aggregate] rpc {} {}:{}:{} code:{:?} message:{:?} end, elapsed {:?}",
                     addrs,
@@ -319,7 +325,7 @@ pub async fn snark_proof(
                         response_result.message,
                     );
                     snark_task.state = TASK_STATE_SUCCESS;
-                    snark_task.trace.node_info = addrs;
+                    snark_task.trace.node_addr = addrs;
                     snark_task.output = response.get_ref().snark_proof_with_public_inputs.clone();
                     return Some(snark_task);
                 }

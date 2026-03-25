@@ -59,8 +59,12 @@ async fn run_stage_task(
                 let mut check_at = get_timestamp();
                 let mut stage = Stage::new(generate_context.clone());
                 let (tx, mut rx) = tokio::sync::mpsc::channel(128);
+
+                // Dispatch the task of the current step.
                 stage.dispatch();
+
                 let mut interval = time::interval(time::Duration::from_millis(200));
+
                 loop {
                     let current_step = stage.step;
                     match stage.step {
@@ -77,7 +81,9 @@ async fn run_stage_task(
                                     }
                                 });
                             }
+
                             // This is a temporary workaround.
+                            // A concurrency limiter for proof tasks to ensure stable dispatch and prevent system overload.
                             if stage.count_processing_prove_tasks() < node_num {
                                 if let Some(prove_task) = stage.get_prove_task() {
                                     let tx = tx.clone();
@@ -92,6 +98,8 @@ async fn run_stage_task(
                                 }
                             }
 
+                            // A throttling policy to delay aggregation until proof tasks are no longer saturated,
+                            // avoiding resource contention.
                             if stage.is_tasks_gen_done
                                 && stage.count_unfinished_prove_tasks() < node_num
                             {
@@ -126,6 +134,7 @@ async fn run_stage_task(
                         }
                         _ => {}
                     }
+
                     tokio::select! {
                         task = rx.recv() => {
                             if let Some(task) = task {
@@ -152,10 +161,15 @@ async fn run_stage_task(
                         _ = interval.tick() => {
                         }
                     }
+
                     if stage.is_success() || stage.is_error() {
                         break;
                     }
+
+                    // Let the state machine consume the new results and prepare for the next step.
                     stage.dispatch();
+
+                    // This allows other workers to see that the task is still actively held.
                     let ts_now = get_timestamp();
                     if check_at + 10 < ts_now || current_step != stage.step {
                         check_at = ts_now;
@@ -174,6 +188,7 @@ async fn run_stage_task(
                         }
                     }
                 }
+
                 if stage.is_error() {
                     let get_status = || match stage.step {
                         Step::Split => stage_service::v1::Status::SplitError,
@@ -216,16 +231,19 @@ async fn run_stage_task(
     }
 }
 
-async fn load_stage_task(node_num: usize, tls_config: Option<TlsConfig>, db: database::Database) {
+async fn start_stage_task(node_num: usize, tls_config: Option<TlsConfig>, db: database::Database) {
     let store = Arc::new(Mutex::new(HashMap::new()));
     loop {
+        // Load tasks.
         let limit = 5;
         let status = stage_service::v1::Status::Computing.into();
         let check_at = get_timestamp();
-        // FIXME: why do we just fetch the task in last 1 min?
+        // check_at < now-60s means that the task is not actively held and can be preempted.
         let result = db
             .get_incomplete_stage_tasks(status, (check_at - 60) as i64, limit)
             .await;
+
+        // Preempt and then execute the tasks.
         match result {
             Ok(tasks) => {
                 if tasks.is_empty() {
@@ -233,9 +251,14 @@ async fn load_stage_task(node_num: usize, tls_config: Option<TlsConfig>, db: dat
                 } else {
                     for mut task in tasks {
                         {
+                            // Record tasks that have already been run in this process to avoid duplicate pulls.
                             if store.lock().unwrap().contains_key(&task.id) {
                                 continue;
                             }
+
+                            // Optimistic lock: Update the DB after pulling the task.
+                            // Only rows_affected==1 is considered a successful preemption,
+                            // and then the task is executed.
                             let rows_affected = db
                                 .update_stage_task_check_at(
                                     &task.id,
@@ -251,6 +274,7 @@ async fn load_stage_task(node_num: usize, tls_config: Option<TlsConfig>, db: dat
                                     let store_arc = store.clone();
                                     let tls_config_copy = tls_config.clone();
                                     let db_copy = db.clone();
+
                                     tokio::spawn(async move {
                                         let id = task.id.clone();
                                         run_stage_task(node_num, task, tls_config_copy, db_copy)
@@ -277,7 +301,7 @@ pub async fn start(
     db: database::Database,
 ) -> anyhow::Result<bool> {
     tokio::spawn(async move {
-        load_stage_task(node_num, tls_config, db).await;
+        start_stage_task(node_num, tls_config, db).await;
     });
     Ok(true)
 }

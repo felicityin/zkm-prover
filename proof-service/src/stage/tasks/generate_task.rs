@@ -19,6 +19,7 @@ pub struct GenerateTask {
     pub block_no: Option<u64>,
     pub seg_size: u32,
     pub target_step: Step,
+    /// Control whether to execute the aggregation phase; skip Agg when set to true.
     pub composite_proof: bool,
     pub receipt_inputs_path: String,
     pub receipts_path: String,
