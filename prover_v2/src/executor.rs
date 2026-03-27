@@ -2,13 +2,11 @@ use common::file;
 use std::borrow::Borrow;
 use std::fs::File;
 use std::io::{self, Seek, Write};
-use std::sync::{
-    mpsc::sync_channel,
-    {Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 use std::thread::ScopedJoinHandle;
 use std::time::Instant;
 
+use crossbeam_channel::bounded;
 use p3_maybe_rayon::prelude::*;
 use zkm_core_executor::{
     events::{format_table_line, sorted_table_lines},
@@ -141,7 +139,7 @@ impl Executor {
             // Spawn the checkpoint generator thread.
             let checkpoint_generator_span = tracing::Span::current().clone();
             let (checkpoints_tx, checkpoints_rx) =
-                sync_channel::<(usize, File, bool)>(opts.checkpoints_channel_capacity);
+                bounded::<(usize, File, bool)>(opts.checkpoints_channel_capacity);
             let checkpoint_generator_handle: ScopedJoinHandle<Result<_, ZKMCoreProverError>> = s
                 .spawn(move || {
                     let _span = checkpoint_generator_span.enter();
@@ -185,7 +183,6 @@ impl Executor {
 
             // Spawn the phase 2 record generator thread.
             let p2_record_gen_sync = Arc::new(TurnBasedSync::new());
-            let checkpoints_rx = Arc::new(Mutex::new(checkpoints_rx));
             let segment_index = Arc::new(Mutex::new(0));
 
             let report_aggregate = Arc::new(Mutex::new(ExecutionReport::default()));
@@ -194,7 +191,7 @@ impl Executor {
             let mut p2_record_and_trace_gen_handles = Vec::new();
             for _ in 0..opts.trace_gen_workers {
                 let record_gen_sync = Arc::clone(&p2_record_gen_sync);
-                let checkpoints_rx = Arc::clone(&checkpoints_rx);
+                let checkpoints_rx = checkpoints_rx.clone();
                 let segment_index = Arc::clone(&segment_index);
 
                 let report_aggregate = Arc::clone(&report_aggregate);
@@ -209,7 +206,7 @@ impl Executor {
                     tracing::debug_span!("phase 2 trace generation").in_scope(|| {
                         loop {
                             // Receive the latest checkpoint.
-                            let received = { checkpoints_rx.lock().unwrap().recv() };
+                            let received = checkpoints_rx.recv();
                             if let Ok((index, mut checkpoint, done)) = received {
                                 // Trace the checkpoint and reconstruct the execution records.
                                 let now = Instant::now();
