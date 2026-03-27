@@ -168,7 +168,6 @@ async fn run_stage_task(mut task: StageTask, tls_config: Option<TlsConfig>, db: 
                     )
                     .await;
                 task.check_at = check_at as i64;
-                check_at = get_timestamp();
 
                 let mut interval = time::interval(time::Duration::from_millis(200));
                 let max_prover_num = stage.generate_task.max_prover_num;
@@ -247,27 +246,31 @@ async fn run_stage_task(mut task: StageTask, tls_config: Option<TlsConfig>, db: 
                         _ => {}
                     }
 
+                    let mut handle_task = async |task: Task| match task {
+                        Task::Split(mut data) => {
+                            stage.on_split_task(&mut data);
+                            save_task!(data, db, TASK_ITYPE_SPLIT);
+                        }
+                        Task::Prove(mut data) => {
+                            stage.on_prove_task(&mut data);
+                        }
+                        Task::Agg(mut data) => {
+                            stage.on_agg_task(&mut data);
+                        }
+                        Task::Snark(mut data) => {
+                            stage.on_snark_task(&mut data);
+                            save_task!(data, db, TASK_ITYPE_FINAL);
+                        }
+                    };
+
                     tokio::select! {
                         task = rx.recv() => {
                             if let Some(task) = task {
-                                match task {
-                                    Task::Split(mut data) => {
-                                        stage.on_split_task(&mut data);
-                                        save_task!(data, db, TASK_ITYPE_SPLIT);
-                                    },
-                                    Task::Prove(mut data) => {
-                                        stage.on_prove_task(&mut data);
-                                        // save_task!(data, db, TASK_ITYPE_PROVE);
-                                    },
-                                    Task::Agg(mut data) => {
-                                        stage.on_agg_task(&mut data);
-                                        // save_task!(data, db, TASK_ITYPE_AGG);
-                                    },
-                                    Task::Snark(mut data) => {
-                                        stage.on_snark_task(&mut data);
-                                        save_task!(data, db, TASK_ITYPE_FINAL);
-                                    },
-                                };
+                                handle_task(task).await;
+                                // Drain any pending results to reduce loop overhead.
+                                while let Ok(task) = rx.try_recv() {
+                                    handle_task(task).await;
+                                }
                             }
                         },
                         _ = interval.tick() => {
