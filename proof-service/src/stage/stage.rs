@@ -531,10 +531,12 @@ impl Stage {
                 break;
             }
         }
-        // Fill in the inputs
+
+        // Transform the reference input into an actual payload.
         if let Some(agg_task) = &mut result {
             agg_task.inputs.iter_mut().for_each(|input| {
                 if input.is_agg {
+                    // Not the leaf layer.
                     let tmp = self
                         .agg_tasks
                         .iter()
@@ -542,6 +544,7 @@ impl Stage {
                         .unwrap();
                     input.receipt_input = tmp.output.clone();
                 } else {
+                    // The leaf layer.
                     let tmp = self
                         .prove_tasks
                         .iter()

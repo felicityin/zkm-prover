@@ -273,6 +273,7 @@ async fn run_stage_task(mut task: StageTask, tls_config: Option<TlsConfig>, db: 
                         _ = interval.tick() => {
                         }
                     }
+
                     if stage.is_success() || stage.is_error() {
                         break;
                     }
@@ -280,10 +281,8 @@ async fn run_stage_task(mut task: StageTask, tls_config: Option<TlsConfig>, db: 
                     // Let the state machine consume the new results and prepare for the next step.
                     stage.dispatch();
 
-                    // This allows other workers to see that the task is still actively held.
-                    let ts_now = get_timestamp();
-                    if check_at + 10 < ts_now || current_step != stage.step {
-                        check_at = ts_now;
+                    if current_step != stage.step {
+                        check_at = get_timestamp();
                         let rows_affected = db
                             .update_stage_task_check_at(
                                 &task.id,
