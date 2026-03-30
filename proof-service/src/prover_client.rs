@@ -4,7 +4,7 @@ use crate::proto::prover_service::v1::{
     SplitElfRequest,
 };
 use common::tls::Config as TlsConfig;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::database::Database;
 use crate::proto::includes::v1::Step;
@@ -30,6 +30,65 @@ enum TaskType {
     SingleNode,
 }
 
+#[derive(Debug)]
+enum NodePermit {
+    Gpu(Arc<Mutex<u32>>),
+    Split(Arc<Mutex<u32>>),
+}
+
+impl NodePermit {
+    fn release(&self) {
+        match self {
+            NodePermit::Gpu(counter) | NodePermit::Split(counter) => {
+                let mut count = counter.lock().unwrap();
+                *count = count.saturating_sub(1);
+            }
+        }
+    }
+}
+
+struct PermitGuard {
+    permit: Option<NodePermit>,
+}
+
+impl PermitGuard {
+    fn new(permit: NodePermit) -> Self {
+        Self {
+            permit: Some(permit),
+        }
+    }
+
+    fn release(&mut self) {
+        if let Some(permit) = self.permit.take() {
+            permit.release();
+        }
+    }
+}
+
+impl Drop for PermitGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+fn env_u32(name: &str, default_value: u32) -> u32 {
+    let value = std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(default_value);
+    std::cmp::max(1, value)
+}
+
+fn max_gpu_inflight() -> u32 {
+    static MAX_GPU: OnceLock<u32> = OnceLock::new();
+    *MAX_GPU.get_or_init(|| env_u32("PROVER_NODE_GPU_INFLIGHT", 1))
+}
+
+fn max_split_inflight() -> u32 {
+    static MAX_SPLIT: OnceLock<u32> = OnceLock::new();
+    *MAX_SPLIT.get_or_init(|| env_u32("PROVER_NODE_SPLIT_INFLIGHT", 1))
+}
+
 fn get_nodes(task_type: TaskType) -> Vec<ProverNode> {
     let nodes_data = crate::prover_node::instance().lock().unwrap();
 
@@ -50,7 +109,12 @@ fn get_nodes(task_type: TaskType) -> Vec<ProverNode> {
 async fn get_idle_client(
     tls_config: Option<TlsConfig>,
     task_type: TaskType,
-) -> Option<(String, ProverServiceClient<Channel>, Arc<Mutex<NodeStatus>>)> {
+) -> Option<(
+    String,
+    ProverServiceClient<Channel>,
+    Arc<Mutex<NodeStatus>>,
+    NodePermit,
+)> {
     let mut nodes = get_nodes(task_type);
     let mut rng = StdRng::from_entropy();
     nodes.shuffle(&mut rng);
@@ -58,9 +122,6 @@ async fn get_idle_client(
     for mut node in nodes {
         {
             let mut status = node.status.lock().unwrap();
-            if *status == NodeStatus::Busy {
-                continue;
-            }
             if status.is_offline() {
                 // If the node is offline for less than 180s, we skip it.
                 if let Some(ts) = status.offline_since() {
@@ -71,12 +132,39 @@ async fn get_idle_client(
                 // unset the client if it was offline more than 180s, and will reconnect later
                 *node.client.lock().unwrap() = None;
             }
-            *status = NodeStatus::Busy;
         }
 
+        let permit = match task_type {
+            TaskType::Split => {
+                let max_inflight = max_split_inflight();
+                let mut count = node.split_in_flight.lock().unwrap();
+                if *count >= max_inflight {
+                    continue;
+                }
+                *count += 1;
+                NodePermit::Split(node.split_in_flight.clone())
+            }
+            _ => {
+                let max_inflight = max_gpu_inflight();
+                let mut count = node.gpu_in_flight.lock().unwrap();
+                if *count >= max_inflight {
+                    continue;
+                }
+                *count += 1;
+                NodePermit::Gpu(node.gpu_in_flight.clone())
+            }
+        };
+
         if let Some(client) = node.is_active(tls_config.clone()).await {
-            return Some((node.addr.clone(), client, node.status.clone()));
+            {
+                let mut status = node.status.lock().unwrap();
+                if status.is_offline() {
+                    *status = NodeStatus::Online;
+                }
+            }
+            return Some((node.addr.clone(), client, node.status.clone(), permit));
         } else {
+            permit.release();
             {
                 let mut status = node.status.lock().unwrap();
                 *status = NodeStatus::OffLine(get_timestamp());
@@ -105,36 +193,13 @@ pub fn result_code_to_state(code: i32) -> u32 {
 pub async fn split(
     mut split_task: SplitTask,
     tls_config: Option<TlsConfig>,
-    cur_prover_num: Arc<tokio::sync::Mutex<u32>>,
-    max_prover_num: u32,
+    _cur_prover_num: Arc<tokio::sync::Mutex<u32>>,
+    _max_prover_num: u32,
 ) -> Option<SplitTask> {
     split_task.state = TASK_STATE_UNPROCESSED;
-    // check if the number of current prover nodes is less than max_prover_num
-    {
-        let count = cur_prover_num.lock().await;
-        if *count >= max_prover_num {
-            return Some(split_task);
-        }
-    }
     let client = get_idle_client(tls_config, TaskType::Split).await;
-    if let Some((addrs, mut client, node_status)) = client {
-        {
-            // after getting an idle client, we can check the current prover number again
-            let mut count = cur_prover_num.lock().await;
-            tracing::debug!(
-                "[before]: current prover num: {}, max prover num: {}",
-                *count,
-                max_prover_num
-            );
-            if *count >= max_prover_num {
-                // cannot run more than max_prover_num nodes at the same time.
-                // set the node status to Idle, so it can be reused later
-                let mut status = node_status.lock().unwrap();
-                *status = NodeStatus::Idle;
-                return Some(split_task);
-            }
-            *count += 1;
-        }
+    if let Some((addrs, mut client, node_status, permit)) = client {
+        let _permit_guard = PermitGuard::new(permit);
         let request = SplitElfRequest {
             proof_id: split_task.proof_id.clone(),
             computed_request_id: split_task.task_id.clone(),
@@ -160,19 +225,9 @@ pub async fn split(
         let mut grpc_request = Request::new(request);
         grpc_request.set_timeout(Duration::from_secs(TASK_TIMEOUT));
         let response = client.split_elf(grpc_request).await;
-        {
-            // Decrease the current prover number.
-            let mut count = cur_prover_num.lock().await;
-            tracing::debug!(
-                "[after]: current prover num: {}, max prover num: {}",
-                *count,
-                max_prover_num
-            );
-            *count -= 1;
-        }
         let mut status = node_status.lock().unwrap();
         if let Ok(response) = response {
-            *status = NodeStatus::Idle;
+            *status = NodeStatus::Online;
             if let Some(response_result) = response.get_ref().result.as_ref() {
                 split_task.state = result_code_to_state(response_result.code);
                 split_task.trace.node_info = addrs.clone();
@@ -218,7 +273,8 @@ pub async fn prove(
         }
     }
     let client = get_idle_client(tls_config, TaskType::Prove).await;
-    if let Some((addrs, mut client, node_status)) = client {
+    if let Some((addrs, mut client, node_status, permit)) = client {
+        let _permit_guard = PermitGuard::new(permit);
         {
             // after getting an idle client, we can check the current prover number again
             let mut count = cur_prover_num.lock().await;
@@ -229,9 +285,9 @@ pub async fn prove(
             );
             if *count >= max_prover_num {
                 // cannot run more than max_prover_num nodes at the same time.
-                // set the node status to Idle, so it can be reused later
+                // set the node status to Online, so it can be reused later
                 let mut status = node_status.lock().unwrap();
-                *status = NodeStatus::Idle;
+                *status = NodeStatus::Online;
                 return Some(prove_task);
             }
             *count += 1;
@@ -239,7 +295,7 @@ pub async fn prove(
         if prove_task.trace.node_info == addrs {
             // If the task is already failed and the node is the same, skip it
             let mut status = node_status.lock().unwrap();
-            *status = NodeStatus::Idle;
+            *status = NodeStatus::Online;
             return Some(prove_task);
         }
         let request = ProveRequest {
@@ -276,7 +332,7 @@ pub async fn prove(
         }
         let mut status = node_status.lock().unwrap();
         if let Ok(response) = response {
-            *status = NodeStatus::Idle;
+            *status = NodeStatus::Online;
             if let Some(response_result) = response.get_ref().result.as_ref() {
                 prove_task.state = result_code_to_state(response_result.code);
                 prove_task.trace.node_info = addrs.clone();
@@ -320,7 +376,8 @@ pub async fn aggregate(
         }
     }
     let client = get_idle_client(tls_config, TaskType::Agg).await;
-    if let Some((addrs, mut client, node_status)) = client {
+    if let Some((addrs, mut client, node_status, permit)) = client {
+        let _permit_guard = PermitGuard::new(permit);
         {
             // after getting an idle client, we can check the current prover number again
             let mut count = cur_prover_num.lock().await;
@@ -331,9 +388,9 @@ pub async fn aggregate(
             );
             if *count >= max_prover_num {
                 // cannot run more than max_prover_num nodes at the same time.
-                // set the node status to Idle, so it can be reused later
+                // set the node status to Online, so it can be reused later
                 let mut status = node_status.lock().unwrap();
-                *status = NodeStatus::Idle;
+                *status = NodeStatus::Online;
                 return Some(agg_task);
             }
             *count += 1;
@@ -374,7 +431,7 @@ pub async fn aggregate(
         }
         let mut status = node_status.lock().unwrap();
         if let Ok(response) = response {
-            *status = NodeStatus::Idle;
+            *status = NodeStatus::Online;
             if let Some(response_result) = response.get_ref().result.as_ref() {
                 agg_task.state = result_code_to_state(response_result.code);
                 agg_task.trace.node_info = addrs.clone();
@@ -416,7 +473,8 @@ pub async fn snark_proof(
         }
     }
     let client = get_idle_client(tls_config, TaskType::Snark).await;
-    if let Some((addrs, mut client, node_status)) = client {
+    if let Some((addrs, mut client, node_status, permit)) = client {
+        let _permit_guard = PermitGuard::new(permit);
         {
             // after getting an idle client, we can check the current prover number again
             let mut count = cur_prover_num.lock().await;
@@ -427,9 +485,9 @@ pub async fn snark_proof(
             );
             if *count >= max_prover_num {
                 // cannot run more than max_prover_num nodes at the same time.
-                // set the node status to Idle, so it can be reused later
+                // set the node status to Online, so it can be reused later
                 let mut status = node_status.lock().unwrap();
-                *status = NodeStatus::Idle;
+                *status = NodeStatus::Online;
                 return Some(snark_task);
             }
             *count += 1;
@@ -462,7 +520,7 @@ pub async fn snark_proof(
         }
         let mut status = node_status.lock().unwrap();
         if let Ok(response) = response {
-            *status = NodeStatus::Idle;
+            *status = NodeStatus::Online;
             if let Some(response_result) = response.get_ref().result.as_ref() {
                 if ResultCode::from_i32(response_result.code) == Some(ResultCode::Ok) {
                     tracing::info!(
@@ -506,7 +564,8 @@ pub async fn single_node(
     loop {
         let tls_config = tls_config.clone();
         let client = get_idle_client(tls_config, TaskType::SingleNode).await;
-        if let Some((addrs, mut client, node_status)) = client {
+        if let Some((addrs, mut client, node_status, permit)) = client {
+            let _permit_guard = PermitGuard::new(permit);
             // update status in the db in order to help client get status response
             db.update_stage_task_check_at(proof_id, old_check_at, check_at, Step::Prove as i32)
                 .await?;
@@ -533,7 +592,7 @@ pub async fn single_node(
             let response = client.single_node(grpc_request).await;
             let mut status = node_status.lock().unwrap();
             if let Ok(response) = response {
-                *status = NodeStatus::Idle;
+                *status = NodeStatus::Online;
                 if let Some(response_result) = response.get_ref().result.as_ref() {
                     single_node_task.state = result_code_to_state(response_result.code);
                     // FIXME: node_info usage?

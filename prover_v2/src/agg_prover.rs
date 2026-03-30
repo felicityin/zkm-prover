@@ -138,17 +138,22 @@ impl AggProver {
                 pk.observe_into(&mut challenger);
             });
 
-            // Commit to the record and traces.
-            let data = tracing::debug_span!("commit")
-                .in_scope(|| prover.compress_prover.commit(&record, traces));
+            let proof = {
+                let _gpu_permit = crate::acquire_gpu_permit();
+                // Commit to the record and traces.
+                let data = tracing::debug_span!("commit")
+                    .in_scope(|| prover.compress_prover.commit(&record, traces));
 
-            // Generate the proof.
-            let proof = tracing::debug_span!("open").in_scope(|| {
-                prover
-                    .compress_prover
-                    .open(&pk, data, &mut challenger)
-                    .unwrap()
-            });
+                // Generate the proof.
+                let proof = tracing::debug_span!("open").in_scope(|| {
+                    prover
+                        .compress_prover
+                        .open(&pk, data, &mut challenger)
+                        .unwrap()
+                });
+                drop(_gpu_permit);
+                proof
+            };
 
             // Verify the proof.
             #[cfg(feature = "debug")]

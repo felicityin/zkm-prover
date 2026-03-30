@@ -115,12 +115,14 @@ impl RootProver {
 
         let mut challenger = prover.core_prover.config().challenger();
         pk.observe_into(&mut challenger);
+        let _gpu_permit = crate::acquire_gpu_permit();
         let now = std::time::Instant::now();
         let main_data = prover.core_prover.commit(&record, main_trace);
         tracing::info!("commit time: {:?}", now.elapsed());
         let now = std::time::Instant::now();
         let proof = prover.core_prover.open(pk, main_data, &mut challenger)?;
         tracing::info!("open time: {:?}", now.elapsed());
+        drop(_gpu_permit);
 
         Ok(bincode::serialize(&proof)?)
     }

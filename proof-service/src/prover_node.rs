@@ -11,8 +11,7 @@ use tonic::transport::Uri;
 
 #[derive(Debug, PartialEq)]
 pub enum NodeStatus {
-    Idle,
-    Busy,
+    Online,
     OffLine(u64), // timestamp of when the node went offline
 }
 
@@ -35,6 +34,8 @@ pub struct ProverNode {
     pub addr: String,
     pub client: Arc<Mutex<Option<tonic::transport::channel::Channel>>>,
     pub status: Arc<Mutex<NodeStatus>>,
+    pub gpu_in_flight: Arc<Mutex<u32>>,
+    pub split_in_flight: Arc<Mutex<u32>>,
 }
 
 impl ProverNode {
@@ -42,7 +43,9 @@ impl ProverNode {
         ProverNode {
             addr: addr.to_string(),
             client: Arc::new(Mutex::new(None)),
-            status: Arc::new(Mutex::new(NodeStatus::Idle)),
+            status: Arc::new(Mutex::new(NodeStatus::Online)),
+            gpu_in_flight: Arc::new(Mutex::new(0)),
+            split_in_flight: Arc::new(Mutex::new(0)),
         }
     }
 

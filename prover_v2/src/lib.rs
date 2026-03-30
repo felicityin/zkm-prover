@@ -23,6 +23,7 @@ pub use zkm_sdk;
 pub mod agg_prover;
 pub mod contexts;
 pub mod executor;
+mod gpu;
 pub mod root_prover;
 pub mod snark_prover;
 
@@ -30,6 +31,8 @@ pub mod pipeline;
 pub mod single_node_prover;
 
 pub const FIRST_LAYER_BATCH_SIZE: usize = 1;
+
+pub(crate) use gpu::acquire_gpu_permit;
 
 pub struct NetworkProve<'a> {
     pub context_builder: ZKMContextBuilder<'a>,
