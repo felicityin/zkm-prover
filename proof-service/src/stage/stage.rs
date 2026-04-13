@@ -8,6 +8,7 @@ use crate::stage::tasks::{
 };
 use rayon::prelude::*;
 use std::{
+    collections::HashMap,
     fmt::{Debug, Formatter},
     io::Write,
     time::{SystemTime, UNIX_EPOCH},
@@ -23,6 +24,14 @@ pub struct Stage {
     pub generate_task: GenerateTask,
     pub split_task: SplitTask,
     pub prove_tasks: Vec<ProveTask>,
+    /// Reverse index from prove task id to its position in `prove_tasks`.
+    prove_task_index: HashMap<String, usize>,
+    /// Invariant: all tasks with index `< next_prove_cursor` are in `TASK_STATE_SUCCESS`.
+    next_prove_cursor: usize,
+    /// Number of prove tasks currently in `TASK_STATE_PROCESSING`.
+    processing_prove_count: usize,
+    /// Number of prove tasks not yet in `TASK_STATE_SUCCESS`.
+    unfinished_prove_count: usize,
     pub agg_tasks: Vec<AggTask>,
     pub snark_task: SnarkTask,
     pub is_error: bool,
@@ -107,12 +116,33 @@ impl Stage {
             generate_task,
             split_task: SplitTask::default(),
             prove_tasks: Vec::new(),
+            prove_task_index: HashMap::new(),
+            next_prove_cursor: 0,
+            processing_prove_count: 0,
+            unfinished_prove_count: 0,
             agg_tasks: Vec::new(),
             snark_task: SnarkTask::default(),
             is_error: false,
             errmsg: "".to_string(),
             is_tasks_gen_done: false,
         }
+    }
+
+    /// Append a prove task while maintaining the reverse index and counters.
+    fn push_prove_task(&mut self, task: ProveTask) {
+        let idx = self.prove_tasks.len();
+        self.prove_task_index.insert(task.task_id.clone(), idx);
+        match task.state {
+            TASK_STATE_SUCCESS => {}
+            TASK_STATE_PROCESSING => {
+                self.processing_prove_count += 1;
+                self.unfinished_prove_count += 1;
+            }
+            _ => {
+                self.unfinished_prove_count += 1;
+            }
+        }
+        self.prove_tasks.push(task);
     }
 
     pub fn dispatch(&mut self) {
@@ -272,12 +302,15 @@ impl Stage {
         if self.generate_task.target_step == Step::Split || self.is_tasks_gen_done {
             return;
         }
-        // Pre-allocate 64 tasks
+        // Pre-allocate 16 tasks
         if self.prove_tasks.is_empty() {
-            self.prove_tasks = (0..16)
+            let tasks: Vec<ProveTask> = (0..16)
                 .into_par_iter()
                 .map(|i| self.task_with_no(i))
                 .collect();
+            for task in tasks {
+                self.push_prove_task(task);
+            }
         }
 
         let file_numbers: usize = match std::fs::read_to_string(format!(
@@ -294,7 +327,7 @@ impl Stage {
         // Generate proof tasks as needed, based on​ the number of segments.
         for file_no in self.prove_tasks.len()..file_numbers {
             let task = self.task_with_no(file_no);
-            self.prove_tasks.push(task);
+            self.push_prove_task(task);
             tracing::debug!("insert {file_no}");
         }
     }
@@ -302,16 +335,34 @@ impl Stage {
     fn gen_prove_task_post(&mut self) {
         // ensure all the prove tasks are generated
         {
-            if self.prove_tasks.len() > self.split_task.total_segments as usize {
-                self.prove_tasks
-                    .truncate(self.split_task.total_segments as usize)
+            let target = self.split_task.total_segments as usize;
+            if self.prove_tasks.len() > target {
+                // Roll back counters and index entries for the tail we are dropping.
+                for task in &self.prove_tasks[target..] {
+                    self.prove_task_index.remove(&task.task_id);
+                    match task.state {
+                        TASK_STATE_SUCCESS => {}
+                        TASK_STATE_PROCESSING => {
+                            self.processing_prove_count -= 1;
+                            self.unfinished_prove_count -= 1;
+                        }
+                        _ => {
+                            self.unfinished_prove_count -= 1;
+                        }
+                    }
+                }
+                self.prove_tasks.truncate(target);
+                if self.next_prove_cursor > target {
+                    self.next_prove_cursor = target;
+                }
             } else {
-                let missing_tasks = (self.prove_tasks.len()
-                    ..self.split_task.total_segments as usize)
+                let missing_tasks: Vec<ProveTask> = (self.prove_tasks.len()..target)
                     .into_par_iter()
                     .map(|i| self.task_with_no(i))
-                    .collect::<Vec<_>>();
-                self.prove_tasks.extend_from_slice(&missing_tasks);
+                    .collect();
+                for task in missing_tasks {
+                    self.push_prove_task(task);
+                }
             }
         }
 
@@ -343,7 +394,7 @@ impl Stage {
                     output: safe_read(&format!("{}/{file_name}", self.generate_task.seg_path)),
                     ..Default::default()
                 };
-                self.prove_tasks.push(prove_task);
+                self.push_prove_task(prove_task);
             }
         }
 
@@ -358,24 +409,54 @@ impl Stage {
     }
 
     pub fn get_prove_task(&mut self) -> Option<ProveTask> {
-        for prove_task in self.prove_tasks.iter_mut() {
-            if prove_task.state == TASK_STATE_UNPROCESSED || prove_task.state == TASK_STATE_FAILED {
-                if !std::path::Path::new(&prove_task.segment).exists() {
+        // Skip over the fully-finished prefix. The cursor only moves forward
+        // and its invariant guarantees everything before it is already SUCCESS.
+        while self.next_prove_cursor < self.prove_tasks.len()
+            && self.prove_tasks[self.next_prove_cursor].state == TASK_STATE_SUCCESS
+        {
+            self.next_prove_cursor += 1;
+        }
+        for idx in self.next_prove_cursor..self.prove_tasks.len() {
+            let task = &mut self.prove_tasks[idx];
+            if task.state == TASK_STATE_UNPROCESSED || task.state == TASK_STATE_FAILED {
+                if !std::path::Path::new(&task.segment).exists() {
                     continue;
                 }
-                prove_task.state = TASK_STATE_PROCESSING;
-                prove_task.trace.start_ts = get_timestamp();
-                return Some(prove_task.clone());
+                task.state = TASK_STATE_PROCESSING;
+                task.trace.start_ts = get_timestamp();
+                let snapshot = task.clone();
+                self.processing_prove_count += 1;
+                return Some(snapshot);
             }
         }
         None
     }
 
     pub fn on_prove_task(&mut self, prove_task: &mut ProveTask) {
-        for item_task in self.prove_tasks.iter_mut() {
-            if item_task.task_id == prove_task.task_id && item_task.state == TASK_STATE_PROCESSING {
-                on_prove_task!(prove_task, item_task, self);
-                break;
+        if let Some(&idx) = self.prove_task_index.get(&prove_task.task_id) {
+            let transitioned = {
+                let item_task = &mut self.prove_tasks[idx];
+                if item_task.state == TASK_STATE_PROCESSING {
+                    on_prove_task!(prove_task, item_task, self);
+                    item_task.state != TASK_STATE_PROCESSING
+                } else {
+                    false
+                }
+            };
+            if transitioned {
+                self.processing_prove_count = self.processing_prove_count.saturating_sub(1);
+                if self.prove_tasks[idx].state == TASK_STATE_SUCCESS {
+                    self.unfinished_prove_count = self.unfinished_prove_count.saturating_sub(1);
+                    if idx == self.next_prove_cursor {
+                        self.next_prove_cursor += 1;
+                        while self.next_prove_cursor < self.prove_tasks.len()
+                            && self.prove_tasks[self.next_prove_cursor].state
+                                == TASK_STATE_SUCCESS
+                        {
+                            self.next_prove_cursor += 1;
+                        }
+                    }
+                }
             }
         }
         // clear agg‘s child task
@@ -394,17 +475,11 @@ impl Stage {
     }
 
     pub fn count_unfinished_prove_tasks(&self) -> usize {
-        self.prove_tasks
-            .iter()
-            .filter(|task| task.state != TASK_STATE_SUCCESS)
-            .count()
+        self.unfinished_prove_count
     }
 
     pub fn count_processing_prove_tasks(&self) -> usize {
-        self.prove_tasks
-            .iter()
-            .filter(|task| task.state == TASK_STATE_PROCESSING)
-            .count()
+        self.processing_prove_count
     }
 
     #[cfg(feature = "prover")]
