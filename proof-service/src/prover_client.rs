@@ -90,7 +90,7 @@ async fn get_idle_client(
         }
     }
     // tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-    tracing::info!("get idle client time: {:?}", now.elapsed().as_millis());
+    // tracing::info!("get idle client time: {:?}", now.elapsed().as_millis());
     None
 }
 

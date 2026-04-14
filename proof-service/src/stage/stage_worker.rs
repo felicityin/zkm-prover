@@ -180,7 +180,7 @@ async fn run_stage_task(mut task: StageTask, tls_config: Option<TlsConfig>, db: 
                             // Dispatch split tasks.
                             let now = std::time::Instant::now();
                             if let Some(task_payload) = stage.get_split_task() {
-                                tracing::info!("get_split_task time: {}", now.elapsed().as_millis());
+                                // tracing::info!("get_split_task time: {}", now.elapsed().as_millis());
                                 dispatch_task(
                                     task_payload,
                                     prover_client::split,
@@ -196,7 +196,7 @@ async fn run_stage_task(mut task: StageTask, tls_config: Option<TlsConfig>, db: 
                             while stage.count_processing_prove_tasks() < max_prover_num as usize {
                                 let now = std::time::Instant::now();
                                 if let Some(task_payload) = stage.get_prove_task() {
-                                    tracing::info!("get_prove_task time: {}", now.elapsed().as_millis());
+                                    // tracing::info!("get_prove_task time: {}", now.elapsed().as_millis());
                                     dispatch_task(
                                         task_payload,
                                         prover_client::prove,
@@ -219,7 +219,7 @@ async fn run_stage_task(mut task: StageTask, tls_config: Option<TlsConfig>, db: 
                             {
                                 let now = std::time::Instant::now();
                                 if let Some(task_payload) = stage.get_agg_task() {
-                                    tracing::info!("get agg task time: {}", now.elapsed().as_millis());
+                                    // tracing::info!("get agg task time: {}", now.elapsed().as_millis());
                                     dispatch_task(
                                         task_payload,
                                         prover_client::aggregate,
@@ -260,31 +260,31 @@ async fn run_stage_task(mut task: StageTask, tls_config: Option<TlsConfig>, db: 
                                         stage.on_split_task(&mut data);
                                         let now = std::time::Instant::now();
                                         save_task!(data, db, TASK_ITYPE_SPLIT);
-                                        tracing::info!("split task done in {:?}", now.elapsed().as_millis());
+                                        // tracing::info!("split task done in {:?}", now.elapsed().as_millis());
                                     },
                                     Task::Prove(mut data) => {
                                         let now = std::time::Instant::now();
                                         stage.on_prove_task(&mut data);
-                                        tracing::info!("prove task done in {:?}", now.elapsed().as_millis());
+                                        // tracing::info!("prove task done in {:?}", now.elapsed().as_millis());
                                         // save_task!(data, db, TASK_ITYPE_PROVE);
                                     },
                                     Task::Agg(mut data) => {
                                         let now = std::time::Instant::now();
                                         stage.on_agg_task(&mut data);
-                                        tracing::info!("agg task done in {:?}", now.elapsed().as_millis());
+                                        // tracing::info!("agg task done in {:?}", now.elapsed().as_millis());
                                         // save_task!(data, db, TASK_ITYPE_AGG);
                                     },
                                     Task::Snark(mut data) => {
                                         let now = std::time::Instant::now();
                                         stage.on_snark_task(&mut data);
-                                        tracing::info!("snark task done in {:?}", now.elapsed().as_millis());
+                                        // tracing::info!("snark task done in {:?}", now.elapsed().as_millis());
                                         save_task!(data, db, TASK_ITYPE_FINAL);
                                     },
                                 };
                             }
                         },
                         _ = interval.tick() => {
-                            tracing::info!("tick: checking task status and updating check_at if needed");
+                            // tracing::info!("tick: checking task status and updating check_at if needed");
                         }
                     }
                     if stage.is_success() || stage.is_error() {
@@ -323,7 +323,7 @@ async fn run_stage_task(mut task: StageTask, tls_config: Option<TlsConfig>, db: 
                 };
                 let now = std::time::Instant::now();
                 finalize_stage_task(&task, &stage, task_start_time, result, &db).await;
-                tracing::info!("finalize stage task time: {:?}", now.elapsed().as_millis());
+                // tracing::info!("finalize stage task time: {:?}", now.elapsed().as_millis());
             }
             Err(_) => {
                 let _ = db
