@@ -47,7 +47,7 @@ impl RootProver {
                 }
             }
         };
-        tracing::info!("read segment time: {:?}", now.elapsed());
+        tracing::info!("read segment time: {:?}", now.elapsed().as_millis());
 
         let network_prove = NetworkProve::new(ctx.seg_size);
         let opts = network_prove.opts.core_opts;
@@ -94,34 +94,37 @@ impl RootProver {
             cache.push(ctx.program_id.clone(), (pk, vk));
             &cache.cache.get(&ctx.program_id).unwrap().0
         };
-        tracing::info!("setup time: {:?}", now.elapsed());
+        tracing::info!("setup time: {:?}", now.elapsed().as_millis());
         let now = std::time::Instant::now();
         prover.core_prover.machine().generate_dependencies(
             std::slice::from_mut(&mut record),
             &opts,
             None,
         ).unwrap();
-        tracing::info!("generate dependencies time: {:?}", now.elapsed());
+        tracing::info!("generate dependencies time: {:?}", now.elapsed().as_millis());
 
         // Fix the shape of the record.
         let now = std::time::Instant::now();
         if let Some(shape_config) = &prover.core_shape_config {
             shape_config.fix_shape(&mut record)?;
         }
-        tracing::info!("fix shape time: {:?}", now.elapsed());
+        tracing::info!("fix shape time: {:?}", now.elapsed().as_millis());
         let now = std::time::Instant::now();
         let main_trace = prover.core_prover.generate_traces(&record).unwrap();
-        tracing::info!("generate traces time: {:?}", now.elapsed());
+        tracing::info!("generate traces time: {:?}", now.elapsed().as_millis());
 
         let mut challenger = prover.core_prover.config().challenger();
         pk.observe_into(&mut challenger);
         let now = std::time::Instant::now();
         let main_data = prover.core_prover.commit(&record, main_trace);
-        tracing::info!("commit time: {:?}", now.elapsed());
+        tracing::info!("commit time: {:?}", now.elapsed().as_millis());
         let now = std::time::Instant::now();
         let proof = prover.core_prover.open(pk, main_data, &mut challenger)?;
-        tracing::info!("open time: {:?}", now.elapsed());
+        tracing::info!("open time: {:?}", now.elapsed().as_millis());
 
-        Ok(bincode::serialize(&proof)?)
+        let now = std::time::Instant::now();
+        let r = bincode::serialize(&proof)?;
+        tracing::info!("serialize proof time: {:?}", now.elapsed().as_millis());
+        Ok(r)
     }
 }

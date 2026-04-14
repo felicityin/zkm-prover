@@ -118,10 +118,13 @@ impl Stage {
     pub fn dispatch(&mut self) {
         match self.step {
             Step::Init => {
+                let now = std::time::Instant::now();
                 self.gen_split_task();
+                tracing::info!("generate split task time: {:?}", now.elapsed().as_millis());
                 self.step = Step::Prove;
             }
             Step::Prove => {
+                let now = std::time::Instant::now();
                 self.gen_prove_task();
                 tracing::debug!("generate {} tasks", self.prove_tasks.len());
                 if self.split_task.state == TASK_STATE_SUCCESS && !self.is_tasks_gen_done {
@@ -176,11 +179,14 @@ impl Stage {
                         }
                     }
                 }
+                tracing::info!("generate prove tasks time: {:?}", now.elapsed().as_millis());
             }
             Step::Agg => {
+                let now = std::time::Instant::now();
                 assert_eq!(self.generate_task.from_step, Step::Agg);
                 self.gen_snark_task();
                 self.step = Step::Snark;
+                tracing::info!("generate snark tasks time: {:?}", now.elapsed().as_millis());
             }
             Step::Snark => {
                 if self.snark_task.state == TASK_STATE_SUCCESS {
@@ -203,6 +209,7 @@ impl Stage {
     }
 
     fn gen_split_task(&mut self) {
+        let now = std::time::Instant::now();
         assert_eq!(self.split_task.state, TASK_STATE_INITIAL);
         self.split_task
             .program_id
@@ -236,18 +243,23 @@ impl Stage {
 
         self.split_task.task_id = uuid::Uuid::new_v4().to_string();
         self.split_task.state = TASK_STATE_UNPROCESSED;
+        tracing::info!("generate split task time: {:?}", now.elapsed().as_millis());
     }
 
     pub fn get_split_task(&mut self) -> Option<SplitTask> {
+        // let now = std::time::Instant::now();
         let src = &mut self.split_task;
         get_task!(src);
+        // tracing::info!("get split task time: {:?}", now.elapsed().as_millis());
     }
 
     pub fn on_split_task(&mut self, split_task: &mut SplitTask) {
+        let now = std::time::Instant::now();
         let dst = &mut self.split_task;
         dst.total_steps = split_task.total_steps;
         dst.total_segments = split_task.total_segments;
         on_task!(split_task, dst, self);
+        tracing::info!("on split task time: {:?}", now.elapsed().as_millis());
     }
 
     fn task_with_no(&self, file_no: usize) -> ProveTask {
@@ -269,6 +281,7 @@ impl Stage {
     }
 
     fn gen_prove_task(&mut self) {
+        let now = std::time::Instant::now();
         if self.generate_task.target_step == Step::Split || self.is_tasks_gen_done {
             return;
         }
@@ -297,9 +310,11 @@ impl Stage {
             self.prove_tasks.push(task);
             tracing::debug!("insert {file_no}");
         }
+        tracing::info!("generate prove tasks time: {:?}", now.elapsed().as_millis());
     }
 
     fn gen_prove_task_post(&mut self) {
+        let now = std::time::Instant::now();
         // ensure all the prove tasks are generated
         {
             if self.prove_tasks.len() > self.split_task.total_segments as usize {
@@ -346,6 +361,7 @@ impl Stage {
                 self.prove_tasks.push(prove_task);
             }
         }
+        tracing::info!("generate prove tasks post processing time: {:?}", now.elapsed().as_millis());
 
         #[cfg(feature = "prover")]
         if self.prove_tasks.len() < 2 {
@@ -358,6 +374,7 @@ impl Stage {
     }
 
     pub fn get_prove_task(&mut self) -> Option<ProveTask> {
+        let now = std::time::Instant::now();
         for prove_task in self.prove_tasks.iter_mut() {
             if prove_task.state == TASK_STATE_UNPROCESSED || prove_task.state == TASK_STATE_FAILED {
                 if !std::path::Path::new(&prove_task.segment).exists() {
@@ -368,10 +385,12 @@ impl Stage {
                 return Some(prove_task.clone());
             }
         }
+        tracing::info!("get prove task time: {:?}", now.elapsed().as_millis());
         None
     }
 
     pub fn on_prove_task(&mut self, prove_task: &mut ProveTask) {
+        let now = std::time::Instant::now();
         for item_task in self.prove_tasks.iter_mut() {
             if item_task.task_id == prove_task.task_id && item_task.state == TASK_STATE_PROCESSING {
                 on_prove_task!(prove_task, item_task, self);
@@ -382,6 +401,7 @@ impl Stage {
         if prove_task.state == TASK_STATE_SUCCESS {
             self.clear_agg_child_task(&prove_task.task_id);
         }
+        tracing::info!("on prove task time: {:?}", now.elapsed().as_millis());
     }
 
     // caller guarantees prove_task is done.
@@ -394,17 +414,23 @@ impl Stage {
     }
 
     pub fn count_unfinished_prove_tasks(&self) -> usize {
-        self.prove_tasks
+        let now = std::time::Instant::now();
+        let r = self.prove_tasks
             .iter()
             .filter(|task| task.state != TASK_STATE_SUCCESS)
-            .count()
+            .count();
+        tracing::info!("count unfinished prove tasks time: {:?}", now.elapsed().as_millis());
+        r
     }
 
     pub fn count_processing_prove_tasks(&self) -> usize {
-        self.prove_tasks
+        let now = std::time::Instant::now();
+        let r = self.prove_tasks
             .iter()
             .filter(|task| task.state == TASK_STATE_PROCESSING)
-            .count()
+            .count();
+        tracing::info!("count processing prove tasks time: {:?}", now.elapsed().as_millis());
+        r
     }
 
     #[cfg(feature = "prover")]
@@ -451,6 +477,7 @@ impl Stage {
 
     #[cfg(feature = "prover_v2")]
     pub fn gen_agg_tasks(&mut self) {
+        let now = std::time::Instant::now();
         use prover_v2::FIRST_LAYER_BATCH_SIZE;
         // The batch size for reducing two layers of recursion.
         let batch_size = 2;
@@ -515,9 +542,11 @@ impl Stage {
         if let Some(last) = self.agg_tasks.last_mut() {
             last.is_final = true;
         }
+        tracing::info!("generate agg tasks time: {:?}", now.elapsed().as_millis());
     }
 
     pub fn get_agg_task(&mut self) -> Option<AggTask> {
+        let now = std::time::Instant::now();
         let mut result: Option<AggTask> = None;
         for agg_task in &mut self.agg_tasks {
             if agg_task.childs.iter().any(|c| c.is_some()) {
@@ -551,10 +580,12 @@ impl Stage {
                 }
             });
         };
+        tracing::info!("get agg task time: {:?}", now.elapsed().as_millis());
         result
     }
 
     pub fn on_agg_task(&mut self, agg_task: &mut AggTask) {
+        let now = std::time::Instant::now();
         for item_task in &mut self.agg_tasks {
             if item_task.task_id == agg_task.task_id && item_task.state == TASK_STATE_PROCESSING {
                 on_task!(agg_task, item_task, self);
@@ -576,6 +607,7 @@ impl Stage {
                 f.write_all(&agg_task.output).unwrap();
             }
         }
+        tracing::info!("on agg task time: {:?}", now.elapsed().as_millis());
     }
 
     pub fn gen_snark_task(&mut self) {
@@ -620,6 +652,7 @@ impl Stage {
     }
 
     pub fn get_snark_task(&mut self) -> Option<SnarkTask> {
+        // let now = std::time::Instant::now();
         let src = &mut self.snark_task;
         tracing::debug!(
             "get_snark_task: proof_id:task_id: {:?}:{:?} => status:{}",
@@ -628,9 +661,11 @@ impl Stage {
             src.state
         );
         get_task!(src);
+        // tracing::info!("get snark task time: {:?}", now.elapsed().as_millis());
     }
 
     pub fn on_snark_task(&mut self, snark_task: &mut SnarkTask) {
+        let now = std::time::Instant::now();
         let dst = &mut self.snark_task;
         // write snark proof to disk
         // TODO: handle the result gracefully
@@ -638,6 +673,7 @@ impl Stage {
             .unwrap_or_else(|_| panic!("can not open {}", &self.generate_task.snark_path));
         f.write_all(&snark_task.output).unwrap();
         on_task!(snark_task, dst, self);
+        tracing::info!("on snark task time: {:?}", now.elapsed().as_millis());
     }
     pub fn get_single_node_task(&self) -> SingleNodeTask {
         SingleNodeTask {

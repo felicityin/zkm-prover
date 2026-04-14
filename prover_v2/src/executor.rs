@@ -229,7 +229,7 @@ impl Executor {
                                 tracing::info!(
                                     "generated {} records in {:?}",
                                     records.len(),
-                                    now.elapsed()
+                                    now.elapsed().as_millis()
                                 );
                                 debug_assert_eq!(records.len(), 1);
                                 *report_aggregate.lock().unwrap() += report;
@@ -298,6 +298,7 @@ impl Executor {
                                 // Let another worker update the state.
                                 record_gen_sync.advance_turn();
 
+                                let now = Instant::now();
                                 let segments: Vec<_> = std::iter::once(Segment::State(Box::new(
                                     StateWithPublicValues {
                                         state: exe_state,
@@ -323,7 +324,7 @@ impl Executor {
                                     tracing::info!(
                                         "Wrote record {} in {:?}",
                                         base_index + i,
-                                        now.elapsed()
+                                        now.elapsed().as_millis()
                                     );
                                 });
 
@@ -367,6 +368,11 @@ impl Executor {
                                         },
                                     );
                                 }
+                                tracing::info!(
+                                    "processed segment {} in {:?}",
+                                    base_index,
+                                    now.elapsed().as_millis()
+                                );
                             } else {
                                 break;
                             }

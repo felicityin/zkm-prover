@@ -51,6 +51,7 @@ async fn get_idle_client(
     tls_config: Option<TlsConfig>,
     task_type: TaskType,
 ) -> Option<(String, ProverServiceClient<Channel>, Arc<Mutex<NodeStatus>>)> {
+    let now = std::time::Instant::now();
     let mut nodes = get_nodes(task_type);
     let mut rng = StdRng::from_entropy();
     nodes.shuffle(&mut rng);
@@ -89,6 +90,7 @@ async fn get_idle_client(
         }
     }
     // tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    tracing::info!("get idle client time: {:?}", now.elapsed().as_millis());
     None
 }
 
@@ -185,7 +187,7 @@ pub async fn split(
                     response.get_ref().computed_request_id,
                     response_result.code,
                     response_result.message,
-                    now.elapsed(),
+                    now.elapsed().as_millis(),
                     split_task.total_steps,
                     split_task.total_segments,
                 );
@@ -288,7 +290,7 @@ pub async fn prove(
                     prove_task.file_no,
                     response_result.code,
                     response_result.message,
-                    now.elapsed(),
+                    now.elapsed().as_millis(),
                 );
                 prove_task.output = response.get_ref().output_receipt.clone();
                 return Some(prove_task);
@@ -386,7 +388,7 @@ pub async fn aggregate(
                     agg_task.agg_index,
                     response_result.code,
                     response_result.message,
-                    now.elapsed(),
+                    now.elapsed().as_millis(),
                 );
                 agg_task.output = response.get_ref().agg_receipt.clone();
                 return Some(agg_task);
@@ -547,7 +549,7 @@ pub async fn single_node(
                         response.get_ref().computed_request_id,
                         response_result.code,
                         response_result.message,
-                        now.elapsed(),
+                        now.elapsed().as_millis(),
                     );
                     return Ok(single_node_task);
                 }

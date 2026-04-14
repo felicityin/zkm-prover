@@ -22,11 +22,15 @@ impl AggProver {
         let prover = get_prover();
         let input = if ctx.is_leaf_layer {
             if !ctx.is_deferred {
+                let now = std::time::Instant::now();
                 let shard_proofs = ctx
                     .proofs
                     .iter()
-                    .map(|proof| bincode::deserialize(proof).unwrap())
+                    .map(|proof| {
+                        bincode::deserialize(proof).unwrap()
+                    })
                     .collect();
+                tracing::info!("[agg] deserialize proof time: {:?}", now.elapsed().as_millis());
                 let vk = bincode::deserialize(&ctx.vk)?;
                 ZKMCircuitWitness::Core(ZKMRecursionWitnessValues {
                     vk,
@@ -36,11 +40,15 @@ impl AggProver {
                     vk_root: prover.recursion_vk_root,
                 })
             } else {
+                let now = std::time::Instant::now();
                 let deferred_witness: ZKMDeferredWitnessValues<_> =
                     bincode::deserialize(&ctx.proofs[0])?;
+                tracing::info!("[agg] deserialize deferred proof time: {:?}", now.elapsed().as_millis());
                 ZKMCircuitWitness::Deferred(deferred_witness)
             }
         } else {
+            let now = std::time::Instant::now();
+
             let reduced_proofs: Vec<ZKMReduceProof<_>> = ctx
                 .proofs
                 .iter()
@@ -54,6 +62,7 @@ impl AggProver {
                     }
                 })
                 .collect();
+            tracing::info!("[agg] deserialize reduced proofs time: {:?}", now.elapsed().as_millis());
 
             ZKMCircuitWitness::Compress(ZKMCompressWitnessValues {
                 vks_and_proofs: reduced_proofs
@@ -66,7 +75,10 @@ impl AggProver {
 
         let reduced_proof = self.compress(&prover, input, network_prove.opts.recursion_opts)?;
 
-        Ok(serde_json::to_string(&reduced_proof)?.into_bytes())
+        let now = std::time::Instant::now();
+        let r = serde_json::to_string(&reduced_proof)?.into_bytes();
+        tracing::info!("[agg] serialize proof time: {:?}", now.elapsed().as_millis());
+        Ok(r)
     }
 
     fn compress(
