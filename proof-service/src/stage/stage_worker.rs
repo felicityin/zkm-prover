@@ -231,7 +231,7 @@ async fn run_stage_task(mut task: StageTask, tls_config: Option<TlsConfig>, db: 
                                     );
                                 } else {
                                     // No more aggregation tasks available, break the inner loop.
-                                    tracing::info!("get_agg_task: false");
+                                    // tracing::info!("get_agg_task: false");
                                     break;
                                 }
                             }
