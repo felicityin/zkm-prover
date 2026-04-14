@@ -119,13 +119,13 @@ impl AggProver {
                 &mut records,
                 &recursion_opts,
                 None,
-            )
+            ).unwrap()
         });
 
         // Generate the traces.
         let record = records.into_iter().next().unwrap();
         let traces = tracing::debug_span!("generate traces")
-            .in_scope(|| prover.compress_prover.generate_traces(&record));
+            .in_scope(|| prover.compress_prover.generate_traces(&record).unwrap());
 
         let (vk, proof) = tracing::debug_span!("batch").in_scope(|| {
             // Get the keys.
