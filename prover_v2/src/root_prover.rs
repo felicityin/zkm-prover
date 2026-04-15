@@ -55,19 +55,14 @@ impl RootProver {
 
         let mut record = match segment {
             Segment::State(state) => {
-                let mut program_cache = PROGRAM_CACHE.lock();
-                let program = if let Some(program) = program_cache.cache.get(&ctx.program_id) {
-                    tracing::info!("load program from cache");
-                    program
-                } else {
+                let program_slot = PROGRAM_CACHE.lock().get_or_init_slot(&ctx.program_id);
+                let program = program_slot.get_or_try_init(|| {
                     tracing::info!("No program in cache, generate new program");
                     let elf = file::new(&ctx.elf_path).read()?;
-                    let program = prover
+                    prover
                         .get_program(&elf)
-                        .map_err(|e| anyhow::Error::msg(e.to_string()))?;
-                    program_cache.push(ctx.program_id.clone(), program);
-                    program_cache.cache.get(&ctx.program_id).unwrap()
-                };
+                        .map_err(|e| anyhow::Error::msg(e.to_string()))
+                })?;
                 let public_values = state.public_values;
                 let (records, _) = tracing::debug_span!("trace checkpoint").in_scope(|| {
                     trace_checkpoint::<CoreSC>(
@@ -86,14 +81,10 @@ impl RootProver {
         };
 
         let now = std::time::Instant::now();
-        let mut cache = KEY_CACHE.lock();
-        let pk = if let Some((pk, _)) = cache.cache.get(&ctx.program_id) {
-            pk
-        } else {
-            let (pk, vk) = prover.core_prover.setup(&record.program);
-            cache.push(ctx.program_id.clone(), (pk, vk));
-            &cache.cache.get(&ctx.program_id).unwrap().0
-        };
+        let key_slot = KEY_CACHE.lock().get_or_init_slot(&ctx.program_id);
+        let (pk, _vk) = key_slot.get_or_try_init(|| {
+            Ok::<_, anyhow::Error>(prover.core_prover.setup(&record.program))
+        })?;
         tracing::info!("setup time: {:?}", now.elapsed());
         let now = std::time::Instant::now();
         prover.core_prover.machine().generate_dependencies(

@@ -112,39 +112,47 @@ type ProvingKey = StarkProvingKey<CoreSC>;
 #[cfg(feature = "gpu")]
 type ProvingKey =
     StarkProvingKeyDevice<CoreSC, FieldMerkleTreeDeviceCommitter<DeviceHasherKoalaBear>>;
+pub type KeyPair = (ProvingKey, StarkVerifyingKey<CoreSC>);
+pub type KeySlot = Arc<OnceCell<KeyPair>>;
+pub type ProgramSlot = Arc<OnceCell<Program>>;
+
 pub struct StarkKeyCache {
-    pub cache: LruCache<String, (ProvingKey, StarkVerifyingKey<CoreSC>)>,
+    pub cache: LruCache<String, KeySlot>,
 }
 
 impl StarkKeyCache {
     pub fn new(size: usize) -> Self {
-        let cache = LruCache::<String, (ProvingKey, StarkVerifyingKey<CoreSC>)>::new(
-            NonZeroUsize::new(size).unwrap(),
-        );
-        Self { cache }
+        Self {
+            cache: LruCache::new(NonZeroUsize::new(size).unwrap()),
+        }
     }
-    pub fn contains(&mut self, key: &String) -> bool {
-        self.cache.get(key).is_some()
-    }
-    pub fn push(&mut self, key: String, v: (ProvingKey, StarkVerifyingKey<CoreSC>)) {
-        self.cache.push(key.clone(), v);
+    pub fn get_or_init_slot(&mut self, key: &str) -> KeySlot {
+        if let Some(slot) = self.cache.get(key) {
+            return slot.clone();
+        }
+        let slot: KeySlot = Arc::new(OnceCell::new());
+        self.cache.push(key.to_string(), slot.clone());
+        slot
     }
 }
 
 pub struct ProgramCache {
-    pub cache: LruCache<String, Program>,
+    pub cache: LruCache<String, ProgramSlot>,
 }
 
 impl ProgramCache {
     pub fn new(size: usize) -> Self {
-        let cache = LruCache::<String, Program>::new(NonZeroUsize::new(size).unwrap());
-        Self { cache }
+        Self {
+            cache: LruCache::new(NonZeroUsize::new(size).unwrap()),
+        }
     }
-    pub fn contains(&mut self, key: &String) -> bool {
-        self.cache.get(key).is_some()
-    }
-    pub fn push(&mut self, key: String, v: Program) {
-        self.cache.push(key.clone(), v);
+    pub fn get_or_init_slot(&mut self, key: &str) -> ProgramSlot {
+        if let Some(slot) = self.cache.get(key) {
+            return slot.clone();
+        }
+        let slot: ProgramSlot = Arc::new(OnceCell::new());
+        self.cache.push(key.to_string(), slot.clone());
+        slot
     }
 }
 

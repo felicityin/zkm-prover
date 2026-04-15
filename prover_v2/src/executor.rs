@@ -58,31 +58,21 @@ impl Executor {
             tracing::info!("Write {} receipts", receipts.len());
         }
 
-        let mut program_cache = PROGRAM_CACHE.lock();
-        let program = if let Some(program) = program_cache.cache.get(&ctx.program_id) {
-            tracing::info!("load program from cache");
-            program
-        } else {
+        let program_slot = PROGRAM_CACHE.lock().get_or_init_slot(&ctx.program_id);
+        let program = program_slot.get_or_try_init(|| {
             tracing::info!("No program in cache, generate new program");
             let elf_path = ctx.elf_path.clone();
             let elf = file::new(&elf_path).read()?;
-            let program = prover
+            prover
                 .get_program(&elf)
-                .map_err(|e| anyhow::Error::msg(e.to_string()))?;
-            program_cache.push(ctx.program_id.clone(), program);
-            program_cache.cache.get(&ctx.program_id).unwrap()
-        };
+                .map_err(|e| anyhow::Error::msg(e.to_string()))
+        })?;
 
-        let mut cache = KEY_CACHE.lock();
-        let vk = if let Some((_, vk)) = cache.cache.get(&ctx.program_id) {
-            tracing::info!("load vk from cache");
-            vk
-        } else {
+        let key_slot = KEY_CACHE.lock().get_or_init_slot(&ctx.program_id);
+        let (_pk, vk) = key_slot.get_or_try_init(|| {
             tracing::info!("No vk in cache, generate new keys");
-            let (pk, vk) = prover.core_prover.setup(program);
-            cache.push(ctx.program_id.clone(), (pk, vk));
-            &cache.cache.get(&ctx.program_id).unwrap().1
-        };
+            Ok::<_, anyhow::Error>(prover.core_prover.setup(program))
+        })?;
         let vk_bytes = bincode::serialize(&vk)?;
         file::new(&format!("{}/vk.bin", ctx.base_dir)).write_all(&vk_bytes)?;
 
