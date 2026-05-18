@@ -110,7 +110,7 @@ impl RootProver {
         }
         tracing::info!("fix shape time: {:?}", now.elapsed());
         let now = std::time::Instant::now();
-        let main_trace = prover.core_prover.generate_traces(&record);
+        let main_trace = prover.core_prover.generate_traces(&record).unwrap();
         tracing::info!("generate traces time: {:?}", now.elapsed());
 
         let mut challenger = prover.core_prover.config().challenger();
