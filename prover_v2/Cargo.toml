@@ -14,19 +14,19 @@ zstd = "0.13.3"
 lru = "0.14.0"
 parking_lot = "0.12"
 
-zkm-core-machine = { git = "https://github.com/ProjectZKM/Ziren" }
-zkm-core-executor = { git = "https://github.com/ProjectZKM/Ziren" }
-zkm-stark = { git = "https://github.com/ProjectZKM/Ziren" }
-zkm-prover = { git = "https://github.com/ProjectZKM/Ziren" }
-zkm-recursion-compiler = { git = "https://github.com/ProjectZKM/Ziren" }
-zkm-recursion-core = { git = "https://github.com/ProjectZKM/Ziren" }
-zkm-recursion-circuit = { git = "https://github.com/ProjectZKM/Ziren" }
-zkm-sdk = { git = "https://github.com/ProjectZKM/Ziren" }
+zkm-core-machine = { git = "https://github.com/felicityin/Ziren", branch = "geth-serde" }
+zkm-core-executor = { git = "https://github.com/felicityin/Ziren", branch = "geth-serde" }
+zkm-stark = { git = "https://github.com/felicityin/Ziren", branch = "geth-serde" }
+zkm-prover = { git = "https://github.com/felicityin/Ziren", branch = "geth-serde" }
+zkm-recursion-compiler = { git = "https://github.com/felicityin/Ziren", branch = "geth-serde" }
+zkm-recursion-core = { git = "https://github.com/felicityin/Ziren", branch = "geth-serde" }
+zkm-recursion-circuit = { git = "https://github.com/felicityin/Ziren", branch = "geth-serde" }
+zkm-sdk = { git = "https://github.com/felicityin/Ziren", branch = "geth-serde" }
 
 p3-maybe-rayon = { git = "https://github.com/ProjectZKM/Plonky3" }
 
-zkm-gpu-prover = { git = "https://github.com/ProjectZKM/ziren-gpu", optional = true }
-zkm-gpu-core = { git = "https://github.com/ProjectZKM/ziren-gpu", optional = true }
+zkm-gpu-prover = { git = "https://github.com/felicityin/ziren-gpu", branch = "test-1.2.6", optional = true }
+zkm-gpu-core = { git = "https://github.com/felicityin/ziren-gpu", branch = "test-1.2.6", optional = true }
 
 common = { path = "../common" }
 tempfile = "3.18.0"
